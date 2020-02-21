@@ -59,6 +59,9 @@ type ClusterInfoDumpOptions struct {
 	RESTClientGetter genericclioptions.RESTClientGetter
 	LogsForObject    polymorphichelpers.LogsForObjectFunc
 
+	LimitBytes   int64
+	SinceSeconds time.Duration
+
 	genericclioptions.IOStreams
 }
 
@@ -85,7 +88,10 @@ func NewCmdClusterInfoDump(f cmdutil.Factory, ioStreams genericclioptions.IOStre
 	cmd.Flags().StringVar(&o.OutputDir, "output-directory", o.OutputDir, i18n.T("Where to output the files.  If empty or '-' uses stdout, otherwise creates a directory hierarchy in that directory"))
 	cmd.Flags().StringSliceVar(&o.Namespaces, "namespaces", o.Namespaces, "A comma separated list of namespaces to dump.")
 	cmd.Flags().BoolVarP(&o.AllNamespaces, "all-namespaces", "A", o.AllNamespaces, "If true, dump all namespaces.  If true, --namespaces is ignored.")
+	cmd.Flags().Int64Var(&o.LimitBytes, "limit-bytes", o.LimitBytes, "Maximum bytes of logs to return. Defaults to no limit.")
+	cmd.Flags().DurationVar(&o.SinceSeconds, "since", o.SinceSeconds, "Only return logs newer than a relative duration like 5s, 2m, or 3h. Defaults to all logs.")
 	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodLogsTimeout)
+
 	return cmd
 }
 
@@ -158,6 +164,7 @@ func (o *ClusterInfoDumpOptions) Complete(f cmdutil.Factory, cmd *cobra.Command)
 	if err != nil {
 		return err
 	}
+
 	// TODO this should eventually just be the completed kubeconfigflag struct
 	o.RESTClientGetter = f
 	o.LogsForObject = polymorphichelpers.LogsForObjectFn
@@ -264,9 +271,16 @@ func (o *ClusterInfoDumpOptions) Run() error {
 
 		printContainer := func(writer io.Writer, container corev1.Container, pod *corev1.Pod) {
 			writer.Write([]byte(fmt.Sprintf("==== START logs for container %s of pod %s/%s ====\n", container.Name, pod.Namespace, pod.Name)))
-			defer writer.Write([]byte(fmt.Sprintf("==== END logs for container %s of pod %s/%s ====\n", container.Name, pod.Namespace, pod.Name)))
-
-			requests, err := o.LogsForObject(o.RESTClientGetter, pod, &corev1.PodLogOptions{Container: container.Name}, timeout, false)
+			defer writer.Write([]byte(fmt.Sprintf("\n==== END logs for container %s of pod %s/%s ====\n", container.Name, pod.Namespace, pod.Name)))
+			podOpts := &corev1.PodLogOptions{Container: container.Name}
+			if o.SinceSeconds > 0 {
+				sinceSecondsInt64 := int64(o.SinceSeconds.Round(time.Second).Seconds())
+				podOpts = &corev1.PodLogOptions{SinceSeconds: &sinceSecondsInt64}
+			}
+			if o.LimitBytes > 0 {
+				podOpts = &corev1.PodLogOptions{LimitBytes: &o.LimitBytes}
+			}
+			requests, err := o.LogsForObject(o.RESTClientGetter, pod, podOpts, timeout, false)
 			if err != nil {
 				// Print error and return.
 				writer.Write([]byte(fmt.Sprintf("Create log request error: %s\n", err.Error())))
